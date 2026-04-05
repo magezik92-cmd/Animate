@@ -28,7 +28,8 @@ export default function MusicSearchGenerator({ onMusicGenerated }: { onMusicGene
     setSongInfo(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+      const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: `Find details for the song or musical style: "${query}". Provide the title, artist (if applicable), musical vibe, genre, and estimated BPM. Return as JSON.`,
@@ -62,21 +63,27 @@ export default function MusicSearchGenerator({ onMusicGenerated }: { onMusicGene
         }
       }
 
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+      const ai = new GoogleGenAI({ apiKey });
       
-      // Using lyria-3-pro-preview for full-length tracks (90s+)
+      // Using lyria-3-pro-preview for full-length tracks (aiming for 6 mins)
       let response;
       try {
         response = await ai.models.generateContentStream({
           model: "lyria-3-pro-preview",
-          contents: `Generate a 90-second full-length track inspired by ${songInfo.title} by ${songInfo.artist}. 
+          contents: `Generate a 6-minute full-length musical track inspired by ${songInfo.title} by ${songInfo.artist}. 
                     Genre: ${songInfo.genre}. Vibe: ${songInfo.vibe}. BPM: ${songInfo.bpm}. 
-                    The track should have a clear intro, build-up, and energetic drop for a music challenge.`,
+                    The track should have a clear intro, multiple build-ups, and energetic drops designed for a long-form music challenge.
+                    Ensure the track is a unique composition that captures the essence of the requested style for the entire duration.`,
           config: {
             responseModalities: [Modality.AUDIO],
           }
         });
       } catch (err: any) {
+        if (err.message?.includes("spending cap") || err.message?.includes("RESOURCE_EXHAUSTED")) {
+          if (window.aistudio) await window.aistudio.openSelectKey();
+          throw new Error("Your Google Cloud project has reached its spending cap. Please check your billing settings in the Google Cloud Console or select a different API key.");
+        }
         if (err.message?.includes("permission") || err.message?.includes("403") || err.message?.includes("not found")) {
           if (window.aistudio) await window.aistudio.openSelectKey();
           throw new Error("API Key permission error. Please ensure you've selected a key from a paid Google Cloud project.");
@@ -85,6 +92,7 @@ export default function MusicSearchGenerator({ onMusicGenerated }: { onMusicGene
       }
 
       let audioBase64 = "";
+      let textContent = "";
       let mimeType = "audio/wav";
 
       for await (const chunk of response) {
@@ -97,10 +105,15 @@ export default function MusicSearchGenerator({ onMusicGenerated }: { onMusicGene
             }
             audioBase64 += part.inlineData.data;
           }
+          if (part.text) {
+            textContent += part.text;
+          }
         }
       }
 
-      if (!audioBase64) throw new Error("No audio generated");
+      if (!audioBase64) {
+        throw new Error(textContent || "No audio generated. The model may have refused the request due to safety or copyright filters. Try a more general description.");
+      }
 
       const binary = atob(audioBase64);
       const bytes = new Uint8Array(binary.length);
@@ -112,9 +125,15 @@ export default function MusicSearchGenerator({ onMusicGenerated }: { onMusicGene
       
       setAudioUrl(url);
       onMusicGenerated(url);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Failed to generate music. Please try again.");
+      if (err.message?.includes("spending cap") || err.message?.includes("RESOURCE_EXHAUSTED")) {
+        setError("Your Google Cloud project has reached its spending cap. Please check your billing settings.");
+      } else if (err.message?.includes("permission") || err.message?.includes("403") || err.message?.includes("not found")) {
+        setError("API Key permission error. Paid models (Lyria) require a selected API key from a paid Google Cloud project.");
+      } else {
+        setError(err.message || "Failed to generate music. Please try again.");
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -229,9 +248,29 @@ export default function MusicSearchGenerator({ onMusicGenerated }: { onMusicGene
         )}
 
         {error && (
-          <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-xs">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            {error}
+          <div className="flex flex-col gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl">
+            <div className="flex items-start gap-2 text-red-400 text-xs">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <p className="leading-relaxed">{error}</p>
+            </div>
+            {(error.includes("permission") || error.includes("spending cap")) && (
+              <div className="flex flex-col gap-2">
+                <button 
+                  onClick={() => window.aistudio?.openSelectKey()}
+                  className="w-full bg-red-500 hover:bg-red-600 text-white py-2 rounded-xl text-[10px] font-bold transition-all"
+                >
+                  Select API Key
+                </button>
+                <a 
+                  href="https://ai.google.dev/gemini-api/docs/billing" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-[10px] text-zinc-500 hover:text-white text-center underline"
+                >
+                  Learn about Gemini API billing
+                </a>
+              </div>
+            )}
           </div>
         )}
       </div>
